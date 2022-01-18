@@ -87,6 +87,8 @@ type StatefulResource interface {
 	// Drain drains a pod for data. It's expected that the method only
 	// returns after the pod has been drained.
 	Drain(ctx context.Context, pod *v1.Pod) error
+
+	DrainPods(ctx context.Context, pods []v1.Pod) error
 }
 
 // Operator is a generic operator that can manage Pods filtered by a selector.
@@ -96,6 +98,7 @@ type Operator struct {
 	interval              time.Duration
 	logger                *log.Entry
 	recorder              kube_record.EventRecorder
+	esClient              *ESClient
 }
 
 func (o *Operator) Run(ctx context.Context, done chan<- struct{}, sr StatefulResource) {
@@ -414,8 +417,7 @@ func (o *Operator) rescaleStatefulSet(ctx context.Context, sts *appsv1.StatefulS
 			return err
 		}
 
-		// TODO: optimize by scaling down all pending pods
-		replicas--
+		replicas += replicaDiff
 	}
 
 	opts := metav1.ListOptions{
@@ -438,26 +440,29 @@ func (o *Operator) rescaleStatefulSet(ctx context.Context, sts *appsv1.StatefulS
 	}
 
 	if len(pods.Items) > replicas {
+		var newPods []v1.Pod
 		for _, pod := range pods.Items[replicas:] {
 			// if pod is Pending we don't need to safely drain it.
 			if pod.Status.Phase == v1.PodPending {
 				continue
 			}
 
-			// wait for StatefulSet to be stable before continuing
-			// always ensure a stable StatefulSet before draining
-			err = waitForStableStatefulSet(ctx, o.kube, sts, stabilizationTimeout)
-			if err != nil {
-				return fmt.Errorf("StatefulSet %s/%s is not stable: %v", sts.Namespace, sts.Name, err)
-			}
-
-			log.Infof("Draining Pod %s/%s for scaledown", pod.Namespace, pod.Name)
-			err := sr.Drain(ctx, &pod)
-			if err != nil {
-				return fmt.Errorf("failed to drain pod %s/%s: %v", pod.Namespace, pod.Name, err)
-			}
-			log.Infof("Pod %s/%s drained", pod.Namespace, pod.Name)
+			newPods = append(newPods, pod)
 		}
+
+		// wait for StatefulSet to be stable before continuing
+		// always ensure a stable StatefulSet before draining
+		err = waitForStableStatefulSet(ctx, o.kube, sts, stabilizationTimeout)
+		if err != nil {
+			return fmt.Errorf("StatefulSet %s/%s is not stable: %v", sts.Namespace, sts.Name, err)
+		}
+
+		log.Infof("Draining Pods for scaledown")
+		err := sr.DrainPods(ctx, newPods)
+		if err != nil {
+			return fmt.Errorf("failed to drain pods ")
+		}
+		log.Infof("Pods drained")
 	}
 
 	// always scale down by one

@@ -513,6 +513,10 @@ func (r *EDSResource) Drain(ctx context.Context, pod *v1.Pod) error {
 	return r.esClient.Drain(ctx, pod)
 }
 
+func (r *EDSResource) DrainPods(ctx context.Context, pods []v1.Pod) error {
+	return r.esClient.DrainPods(ctx, pods)
+}
+
 // PreScaleDownHook ensures that the IndexReplicas is set as defined in the EDS
 // 'scaling-operation' annotation prior to scaling down the internal
 // StatefulSet.
@@ -648,6 +652,7 @@ func (o *ElasticsearchOperator) operateEDS(eds *zv1.ElasticsearchDataSet, delete
 	}
 
 	operator := &Operator{
+		esClient:              client,
 		kube:                  o.kube,
 		priorityNodeSelectors: o.priorityNodeSelectors,
 		interval:              o.interval,
