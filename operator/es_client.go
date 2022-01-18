@@ -465,6 +465,25 @@ func (c *ESClient) GetNodes() ([]ESNode, error) {
 	return returnStruct, nil
 }
 
+func (c *ESClient) GetShardsByIndexAlias(indexAlias string) ([]ESShard, error) {
+	resp, err := resty.New().R().
+		Get(c.Endpoint.String() + fmt.Sprintf("/_cat/shards/%s?h=index,ip&format=json", indexAlias))
+
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode() != http.StatusOK {
+		return nil, fmt.Errorf("code status %d - %s", resp.StatusCode(), resp.Body())
+	}
+	var esShards []ESShard
+	err = json.Unmarshal(resp.Body(), &esShards)
+	if err != nil {
+		return nil, err
+	}
+	return esShards, nil
+}
+
 func (c *ESClient) GetShards() ([]ESShard, error) {
 	resp, err := resty.New().R().
 		Get(c.Endpoint.String() + "/_cat/shards?h=index,ip&format=json")
@@ -482,6 +501,48 @@ func (c *ESClient) GetShards() ([]ESShard, error) {
 		return nil, err
 	}
 	return esShards, nil
+}
+
+func (c *ESClient) GetIndicesByIndexAlias(indexAlias string) ([]ESIndex, error) {
+	resp, err := resty.New().R().
+		Get(c.Endpoint.String() + fmt.Sprintf("/_cat/indices/%s?h=index,pri,rep&format=json", indexAlias))
+
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode() != http.StatusOK {
+		return nil, fmt.Errorf("code status %d - %s", resp.StatusCode(), resp.Body())
+	}
+	var esIndices []_ESIndex
+	err = json.Unmarshal(resp.Body(), &esIndices)
+	if err != nil {
+		return nil, err
+	}
+
+	returnStruct := make([]ESIndex, 0, len(esIndices))
+	for _, index := range esIndices {
+		// ignore system indices
+		if c.excludeSystemIndices && strings.HasPrefix(index.Index, ".") {
+			continue
+		}
+		// HACK: after-the-fact conversion of strings to integers from ES response.
+		primaries, err := strconv.Atoi(index.Primaries)
+		if err != nil {
+			return nil, err
+		}
+		replicas, err := strconv.Atoi(index.Replicas)
+		if err != nil {
+			return nil, err
+		}
+		returnStruct = append(returnStruct, ESIndex{
+			Primaries: int32(primaries),
+			Replicas:  int32(replicas),
+			Index:     index.Index,
+		})
+	}
+
+	return returnStruct, nil
 }
 
 func (c *ESClient) GetIndices() ([]ESIndex, error) {

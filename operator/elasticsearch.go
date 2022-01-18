@@ -829,7 +829,14 @@ func (o *ElasticsearchOperator) scaleEDS(ctx context.Context, eds *zv1.Elasticse
 	as := NewAutoScaler(es, o.metricsInterval, client)
 
 	if scaling != nil && scaling.Enabled {
-		scalingOperation, err := as.GetScalingOperation()
+		var scalingOperation *ScalingOperation
+
+		if len(scaling.MainIndexAlias) > 0 {
+			scalingOperation, err = as.GetScalingOperationByIndexAlias(scaling.MainIndexAlias)
+		} else {
+			scalingOperation, err = as.GetScalingOperation()
+		}
+
 		if err != nil {
 			return err
 		}

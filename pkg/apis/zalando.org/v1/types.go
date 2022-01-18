@@ -171,7 +171,8 @@ type ElasticsearchDataSetScaling struct {
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=100
 	// +optional
-	DiskUsagePercentScaledownWatermark int32 `json:"diskUsagePercentScaledownWatermark"`
+	DiskUsagePercentScaledownWatermark int32  `json:"diskUsagePercentScaledownWatermark"`
+	MainIndexAlias                     string `json:"mainIndexAlias"`
 }
 
 // ElasticsearchDataSetStatus is the status section of the ElasticsearchDataSet

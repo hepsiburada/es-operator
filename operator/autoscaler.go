@@ -131,6 +131,30 @@ func (as *AutoScaler) scalingHint() ScalingDirection {
 
 // TODO: check alternative approach by configuring the tags used for `index.routing.allocation`
 // and deriving the indices from there.
+func (as *AutoScaler) GetScalingOperationByIndexAlias(indexAlias string) (*ScalingOperation, error) {
+	direction := as.scalingHint()
+	esIndices, err := as.esClient.GetIndicesByIndexAlias(indexAlias)
+	if err != nil {
+		return nil, err
+	}
+
+	esShards, err := as.esClient.GetShardsByIndexAlias(indexAlias)
+	if err != nil {
+		return nil, err
+	}
+
+	esNodes, err := as.esClient.GetNodes()
+	if err != nil {
+		return nil, err
+	}
+
+	managedIndices := as.getManagedIndices(esIndices, esShards)
+	managedNodes := as.getManagedNodes(as.pods, esNodes)
+	return as.calculateScalingOperation(managedIndices, managedNodes, direction), nil
+}
+
+// TODO: check alternative approach by configuring the tags used for `index.routing.allocation`
+// and deriving the indices from there.
 func (as *AutoScaler) GetScalingOperation() (*ScalingOperation, error) {
 	direction := as.scalingHint()
 	esIndices, err := as.esClient.GetIndices()
