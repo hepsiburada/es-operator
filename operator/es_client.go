@@ -3,6 +3,7 @@ package operator
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -543,6 +544,47 @@ func (c *ESClient) GetIndicesByIndexAlias(indexAlias string) ([]ESIndex, error) 
 	}
 
 	return returnStruct, nil
+}
+
+func (c *ESClient) GetIndexByIndexAlias(indexAlias string) (*ESIndex, error) {
+	resp, err := resty.New().R().
+		Get(c.Endpoint.String() + fmt.Sprintf("/_cat/indices/%s?h=index,pri,rep&format=json", indexAlias))
+
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode() != http.StatusOK {
+		return nil, fmt.Errorf("code status %d - %s", resp.StatusCode(), resp.Body())
+	}
+	var esIndices []_ESIndex
+	err = json.Unmarshal(resp.Body(), &esIndices)
+	if err != nil {
+		return nil, err
+	}
+
+	mainIndex := esIndices[0]
+
+	if c.excludeSystemIndices && strings.HasPrefix(mainIndex.Index, ".") {
+		return nil, errors.New(fmt.Sprintf("Excluded system index %s", mainIndex.Index))
+	}
+	// HACK: after-the-fact conversion of strings to integers from ES response.
+	primaries, err := strconv.Atoi(mainIndex.Primaries)
+	if err != nil {
+		return nil, err
+	}
+	replicas, err := strconv.Atoi(mainIndex.Replicas)
+	if err != nil {
+		return nil, err
+	}
+
+	res := &ESIndex{
+		Primaries: int32(primaries),
+		Replicas:  int32(replicas),
+		Index:     mainIndex.Index,
+	}
+
+	return res, nil
 }
 
 func (c *ESClient) GetIndices() ([]ESIndex, error) {
