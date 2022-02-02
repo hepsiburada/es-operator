@@ -3,22 +3,21 @@ package operator
 import (
 	"context"
 	"fmt"
-	"sort"
-	"strconv"
-	"strings"
-	"time"
-
 	"github.com/cenk/backoff"
 	log "github.com/sirupsen/logrus"
 	"github.com/zalando-incubator/es-operator/pkg/clientset"
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
+	k8s_errors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	kube_record "k8s.io/client-go/tools/record"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
 )
 
 const (
@@ -95,7 +94,7 @@ func (o *Operator) reconcileStatefulset(ctx context.Context, sr StatefulResource
 
 	sts, err = o.kube.AppsV1().StatefulSets(sr.Namespace()).Get(ctx, sr.Name(), metav1.GetOptions{})
 	if err != nil {
-		if !errors.IsNotFound(err) {
+		if !k8s_errors.IsNotFound(err) {
 			return nil, err
 		}
 		sts = nil
@@ -348,7 +347,7 @@ func (o *Operator) operatePods(ctx context.Context, sts *appsv1.StatefulSet, sr 
 // 2. mark Pod draining.
 // 3. drain Pod.
 // 4. delete Pod.
-func (o *Operator) operatePodsLast(ctx context.Context, sts *appsv1.StatefulSet, sr StatefulResource) error {
+func (o *Operator) operatePodsNew(ctx context.Context, sts *appsv1.StatefulSet, sr StatefulResource) error {
 	desiredReplicas := sr.Replicas()
 
 	replicas := int32(0)
@@ -359,12 +358,13 @@ func (o *Operator) operatePodsLast(ctx context.Context, sts *appsv1.StatefulSet,
 	// prefer scale up over draining nodes.
 	if replicas < desiredReplicas {
 		o.logger.Info(fmt.Sprintf("StatefulSet reScaling when statefulSet replica count less than desired replica count. DesiredReplica : %d, StatefulSet Replica : %d", desiredReplicas, replicas))
-		err := o.rescaleStatefulSet(ctx, sts, sr)
+
+		err := o.rescaleStatefulSetNew(ctx, sts, sr)
 		if err != nil {
 			return fmt.Errorf("failed to rescale StatefulSet: %v", err)
 		}
 
-		return sr.OnStableReplicasHook(ctx)
+		return nil
 	}
 
 	opts := metav1.ListOptions{
@@ -385,17 +385,13 @@ func (o *Operator) operatePodsLast(ctx context.Context, sts *appsv1.StatefulSet,
 
 	// return if there are no Pods to be updated.
 	if pod == nil {
-		o.logger.Info(fmt.Sprintf("StatefulSet reScaling when update pods was empty. DesiredReplica : %d, StatefulSet Replica : %d", desiredReplicas, replicas))
+		o.logger.Info(fmt.Sprintf("Updatable Pod isn't available. DesiredReplica : %d, StatefulSet Replica : %d", desiredReplicas, replicas))
 
-		err := o.rescaleStatefulSet(ctx, sts, sr)
+		err := o.rescaleStatefulSetNew(ctx, sts, sr)
 		if err != nil {
 			return fmt.Errorf("failed to rescale StatefulSet: %v", err)
 		}
 
-		err = waitForStableStatefulSet(ctx, o.kube, sts, stabilizationTimeout)
-		if err != nil {
-			return fmt.Errorf("StatefulSet %s/%s is not stable: %v", sts.Namespace, sts.Name, err)
-		}
 		return sr.OnStableReplicasHook(ctx)
 	}
 
@@ -414,6 +410,8 @@ func (o *Operator) operatePodsLast(ctx context.Context, sts *appsv1.StatefulSet,
 			fmt.Sprintf("Scaled out StatefulSet '%s/%s' to %d Replicas to perform rolling update",
 				sts.Namespace, sts.Name, replicas))
 	}
+
+	o.logger.Info(fmt.Sprintf("Updatable pod is available. Name : %s", pod.Name))
 
 	// wait for StatefulSet to be stable before continuing
 	err = waitForStableStatefulSet(ctx, o.kube, sts, stabilizationTimeout)
@@ -466,141 +464,7 @@ func (o *Operator) operatePodsLast(ctx context.Context, sts *appsv1.StatefulSet,
 	return sr.OnStableReplicasHook(ctx)
 }
 
-// operatePods operates on Pods by picking all Pods one by one to update,
-// ensuring the Pod gets updated.
-// In case the statefulset replicas does not match the desired replicas,
-// autoscaling is performed.
-// Scale-up is always prefered over any other action like draining old pods.
-// Updating a Pod means:
-// 1. scale out StatefulSet (if needed).
-// 2. mark Pod draining.
-// 3. drain Pod.
-// 4. delete Pod.
-func (o *Operator) operatePodsNew(ctx context.Context, sts *appsv1.StatefulSet, sr StatefulResource) error {
-	desiredReplicas := sr.Replicas()
-
-	replicas := int32(0)
-	if sts.Spec.Replicas != nil {
-		replicas = *sts.Spec.Replicas
-	}
-
-	// prefer scale up over draining nodes.
-	if replicas < desiredReplicas {
-		o.logger.Info(fmt.Sprintf("StatefulSet replica count less than desiredReplica count, DesiredReplica : %v, StatefulSetReplica : %v", desiredReplicas, replicas))
-
-		err := o.rescaleStatefulSetNew(ctx, sts, sr)
-		if err != nil {
-			return fmt.Errorf("failed to rescale StatefulSet: %v", err)
-		}
-		return nil
-	}
-
-	opts := metav1.ListOptions{
-		LabelSelector: labels.Set(
-			sr.LabelSelector(),
-		).AsSelector().String(),
-	}
-
-	pods, err := o.kube.CoreV1().Pods(sr.Namespace()).List(ctx, opts)
-	if err != nil {
-		return fmt.Errorf("failed to list pods of StatefulSet: %v", err)
-	}
-
-	updatePods, err := o.getPodToUpdateNew(ctx, pods.Items, sts, sr)
-
-	if err != nil {
-		return fmt.Errorf("failed to get Pod to update: %v", err)
-	}
-
-	// return if there are no Pods to be updated.
-	if len(updatePods) == 0 {
-		o.logger.Info(fmt.Sprintf("Pod is null, DesiredReplica : %v, StatefulSetReplica : %v", desiredReplicas, replicas))
-
-		err := o.rescaleStatefulSetNew(ctx, sts, sr)
-		if err != nil {
-			return fmt.Errorf("failed to rescale StatefulSet: %v", err)
-		}
-
-		err = waitForStableStatefulSet(ctx, o.kube, sts, stabilizationTimeout)
-		if err != nil {
-			return fmt.Errorf("StatefulSet %s/%s is not stable: %v", sts.Namespace, sts.Name, err)
-		}
-		return sr.OnStableReplicasHook(ctx)
-	}
-
-	// scale out by one to perform the update
-	if int32(desiredReplicas) == replicas {
-		replicas++
-		sts.Spec.Replicas = &replicas
-
-		o.logger.Info(fmt.Sprintf("StatefulSet replica count increased one. DesiredReplica : %v, StatefulSetReplica : %v", desiredReplicas, replicas))
-
-		_, err = o.kube.AppsV1().StatefulSets(sts.Namespace).Update(ctx, sts, metav1.UpdateOptions{})
-		if err != nil {
-			return fmt.Errorf("failed to scale StatefulSet %s/%s to %d: %v", sts.Namespace, sts.Name, replicas, err)
-		}
-		o.recorder.Event(sr.Self(), v1.EventTypeNormal, "ScaledStatefulSet",
-			fmt.Sprintf("Scaled out StatefulSet '%s/%s' to %d Replicas to perform rolling update",
-				sts.Namespace, sts.Name, replicas))
-	}
-
-	for _, pod := range updatePods {
-		// wait for StatefulSet to be stable before continuing
-		err = waitForStableStatefulSet(ctx, o.kube, sts, stabilizationTimeout)
-		if err != nil {
-			return fmt.Errorf("StatefulSet %s/%s is not stable: %v", sts.Namespace, sts.Name, err)
-		}
-
-		// TODO: make sure operation is being performed on the
-		// right Pod (StatefulSet Pods have the same name through time but may
-		// have different UUIDs).
-
-		o.logger.Info(fmt.Sprintf("Mark Pod draining. PodName : %s, DesiredReplica : %v, StatefulSetReplica : %v", pod.Name, desiredReplicas, replicas))
-
-		// mark Pod draining
-		err = o.annotatePod(ctx, pod, operatorPodDrainingAnnotationKey, "true")
-		if err != nil {
-			return fmt.Errorf("failed to mark Pod %s/%s draining: %v", pod.Namespace, pod.Name, err)
-		}
-
-		// drain Pod
-		o.recorder.Event(sr.Self(), v1.EventTypeNormal, "DrainingPod", fmt.Sprintf("Draining Pod '%s/%s'", pod.Namespace,
-			pod.Name))
-		err = sr.Drain(ctx, pod)
-		if err != nil {
-			return fmt.Errorf("failed to drain Pod %s/%s: %v", pod.Namespace, pod.Name, err)
-		}
-		o.recorder.Event(sr.Self(), v1.EventTypeNormal, "DrainedPod", fmt.Sprintf("Successfully drained Pod '%s/%s'",
-			pod.Namespace,
-			pod.Name))
-
-		// delete Pod
-		o.recorder.Event(sr.Self(), v1.EventTypeNormal, "DeletingPod", fmt.Sprintf("Deleting Pod '%s/%s'", pod.Namespace,
-			pod.Name))
-		err = o.kube.CoreV1().Pods(pod.Namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{
-			GracePeriodSeconds: pod.Spec.TerminationGracePeriodSeconds,
-		})
-		if err != nil {
-			return fmt.Errorf("failed to delete Pod %s/%s: %v", pod.Namespace, pod.Name, err)
-		}
-
-		// wait for Pod to be terminated and gone from the node.
-		err = waitForPodTermination(ctx, o.kube, pod)
-		if err != nil {
-			log.Warnf("Pod %s/%s not terminated within grace period: %v", pod.Namespace, pod.Name, err)
-		}
-
-		o.recorder.Event(sr.Self(), v1.EventTypeNormal, "DeletedPod", fmt.Sprintf("Successfully deleted Pod '%s/%s'",
-			pod.Namespace,
-			pod.Name))
-	}
-
-	// we don't know if we're done, ie. if there are more pods to be operated - returning false here.
-	return sr.OnStableReplicasHook(ctx)
-}
-
-// rescaleStatefulSet rescales the StatefulSet
-func (o *Operator) rescaleStatefulSet(ctx context.Context, sts *appsv1.StatefulSet, sr StatefulResource) error {
+func (o *Operator) rescaleStatefulSetNew(ctx context.Context, sts *appsv1.StatefulSet, sr StatefulResource) error {
 	replicaDiff := 0
 	currentReplicas := 0
 	if sts.Spec.Replicas != nil {
@@ -618,18 +482,71 @@ func (o *Operator) rescaleStatefulSet(ctx context.Context, sts *appsv1.StatefulS
 	// scale up or scale down StatefulSet
 	replicas := currentReplicas
 	if replicaDiff > 0 {
-		replicas += replicaDiff
-	} else if replicaDiff < 0 && replicas > 0 {
-		// When scaledown is desired trigger the PreScaleDown Hook.
-		// It's ensured that the hook is triggered at least once for
-		// scale down, but may be executed multiple times.
-		err := sr.PreScaleDownHook(ctx)
+		err := o.reScaleUpStatefulSet(replicaDiff, ctx, sts, sr)
 		if err != nil {
 			return err
 		}
 
-		replicas += replicaDiff
+	} else if replicaDiff < 0 && replicas > 0 {
+		err := o.reScaleDownStatefulSet(replicaDiff, ctx, sts, sr)
+		if err != nil {
+			return err
+		}
 	}
+	return nil
+}
+
+func (o *Operator) reScaleUpStatefulSet(replicaDiff int, ctx context.Context, sts *appsv1.StatefulSet, sr StatefulResource) error {
+	currentReplicas := 0
+	if sts.Spec.Replicas != nil {
+		currentReplicas = int(*sts.Spec.Replicas)
+	}
+
+	replicas := currentReplicas
+
+	replicas += replicaDiff
+
+	// always scale down by one
+	replicasInt32 := int32(replicas)
+	sts.Spec.Replicas = &replicasInt32
+
+	if replicas != currentReplicas {
+		o.recorder.Event(sr.Self(), v1.EventTypeNormal, "ChangingReplicas",
+			fmt.Sprintf("Changing replicas %d -> %d for StatefulSet '%s/%s'", currentReplicas, replicas, sts.Namespace,
+				sts.Name))
+	}
+
+	// TODO: only update if something changed
+	_, err := o.kube.AppsV1().StatefulSets(sts.Namespace).Update(ctx, sts, metav1.UpdateOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to update StatefulSet %s/%s: %v", sts.Namespace, sts.Name, err)
+	}
+
+	err = waitForStableStatefulSet(ctx, o.kube, sts, stabilizationTimeout)
+	if err != nil {
+		return fmt.Errorf("StatefulSet %s/%s is not stable: %v", sts.Namespace, sts.Name, err)
+	}
+
+	log.Infof("Updated StatefulSet %s/%s and marked it as 'not updating'", sts.Namespace, sts.Name)
+
+	return sr.OnStableReplicasHook(ctx)
+}
+
+func (o *Operator) reScaleDownStatefulSet(replicaDiff int, ctx context.Context, sts *appsv1.StatefulSet, sr StatefulResource) error {
+	currentReplicas := 0
+	if sts.Spec.Replicas != nil {
+		currentReplicas = int(*sts.Spec.Replicas)
+	}
+
+	replicas := currentReplicas
+
+	err := sr.PreScaleDownHook(ctx)
+
+	if err != nil {
+		return err
+	}
+
+	replicas += replicaDiff
 
 	opts := metav1.ListOptions{
 		LabelSelector: labels.Set(sts.Spec.Selector.MatchLabels).String(),
@@ -702,7 +619,7 @@ func (o *Operator) rescaleStatefulSet(ctx context.Context, sts *appsv1.StatefulS
 }
 
 // rescaleStatefulSet rescales the StatefulSet
-func (o *Operator) rescaleStatefulSetNew(ctx context.Context, sts *appsv1.StatefulSet, sr StatefulResource) error {
+func (o *Operator) rescaleStatefulSet(ctx context.Context, sts *appsv1.StatefulSet, sr StatefulResource) error {
 	replicaDiff := 0
 	currentReplicas := 0
 	if sts.Spec.Replicas != nil {
@@ -720,75 +637,17 @@ func (o *Operator) rescaleStatefulSetNew(ctx context.Context, sts *appsv1.Statef
 	// scale up or scale down StatefulSet
 	replicas := currentReplicas
 	if replicaDiff > 0 {
-		err := o.reScaleUpStatefulSet(replicaDiff, ctx, sts, sr)
-		if err != nil {
-			return err
-		}
-
+		replicas += replicaDiff
 	} else if replicaDiff < 0 && replicas > 0 {
-		err := o.reScaleDownStatefulSet(replicaDiff, ctx, sts, sr)
+		// When scaledown is desired trigger the PreScaleDown Hook.
+		// It's ensured that the hook is triggered at least once for
+		// scale down, but may be executed multiple times.
+		err := sr.PreScaleDownHook(ctx)
 		if err != nil {
 			return err
 		}
-	}
-	return nil
-}
 
-func (o *Operator) reScaleUpStatefulSet(replicaDiff int, ctx context.Context, sts *appsv1.StatefulSet, sr StatefulResource) error {
-	currentReplicas := 0
-	if sts.Spec.Replicas != nil {
-		currentReplicas = int(*sts.Spec.Replicas)
-	}
-
-	replicas := currentReplicas
-
-	replicas += replicaDiff
-
-	// always scale down by one
-	replicasInt32 := int32(replicas)
-	sts.Spec.Replicas = &replicasInt32
-
-	if replicas != currentReplicas {
-		o.recorder.Event(sr.Self(), v1.EventTypeNormal, "ChangingReplicas",
-			fmt.Sprintf("Changing replicas %d -> %d for StatefulSet '%s/%s'", currentReplicas, replicas, sts.Namespace,
-				sts.Name))
-	}
-
-	// TODO: only update if something changed
-	_, err := o.kube.AppsV1().StatefulSets(sts.Namespace).Update(ctx, sts, metav1.UpdateOptions{})
-	if err != nil {
-		return fmt.Errorf("failed to update StatefulSet %s/%s: %v", sts.Namespace, sts.Name, err)
-	}
-
-	err = waitForStableStatefulSet(ctx, o.kube, sts, stabilizationTimeout)
-	if err != nil {
-		return fmt.Errorf("StatefulSet %s/%s is not stable: %v", sts.Namespace, sts.Name, err)
-	}
-
-	log.Infof("Updated StatefulSet %s/%s and marked it as 'not updating'", sts.Namespace, sts.Name)
-
-	err = sr.OnStableReplicasHook(ctx)
-
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (o *Operator) reScaleDownStatefulSet(replicaDiff int, ctx context.Context, sts *appsv1.StatefulSet, sr StatefulResource) error {
-	currentReplicas := 0
-	if sts.Spec.Replicas != nil {
-		currentReplicas = int(*sts.Spec.Replicas)
-	}
-
-	replicas := currentReplicas
-
-	replicas += replicaDiff
-
-	err := sr.PreScaleDownHook(ctx)
-	if err != nil {
-		return err
+		replicas += replicaDiff
 	}
 
 	opts := metav1.ListOptions{
@@ -996,7 +855,7 @@ func waitForPodTermination(ctx context.Context, client kubernetes.Interface, pod
 	waitForTermination := func() error {
 		newpod, err := client.CoreV1().Pods(pod.Namespace).Get(ctx, pod.Name, metav1.GetOptions{})
 		if err != nil {
-			if errors.IsNotFound(err) {
+			if k8s_errors.IsNotFound(err) {
 				return nil
 			}
 			return err

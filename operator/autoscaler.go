@@ -429,6 +429,7 @@ func (as *AutoScaler) scaleUpOrDownNew(esIndices map[string]ESIndex, mainIndex E
 			coordinatorIndexSettings, err := as.getCoordinatorIndexSettingsForScaleUp(esIndices, mainIndex, currentTotalShards)
 
 			if err != nil {
+				as.logger.Info(err)
 				return noopScalingOperation(err.Error())
 			}
 
@@ -483,6 +484,7 @@ func (as *AutoScaler) scaleUpOrDownNew(esIndices map[string]ESIndex, mainIndex E
 		coordinatorIndexSettings, err := as.getCoordinatorIndexSettingsForScaleDown(esIndices, mainIndex, currentTotalShards)
 
 		if err != nil {
+			as.logger.Info(err)
 			return noopScalingOperation(err.Error())
 		}
 
