@@ -363,8 +363,7 @@ func (o *Operator) operatePodsNew(ctx context.Context, sts *appsv1.StatefulSet, 
 		if err != nil {
 			return fmt.Errorf("failed to rescale StatefulSet: %v", err)
 		}
-
-		return nil
+		return sr.OnStableReplicasHook(ctx)
 	}
 
 	opts := metav1.ListOptions{
@@ -486,7 +485,6 @@ func (o *Operator) rescaleStatefulSetNew(ctx context.Context, sts *appsv1.Statef
 		if err != nil {
 			return err
 		}
-
 	} else if replicaDiff < 0 && replicas > 0 {
 		err := o.reScaleDownStatefulSet(replicaDiff, ctx, sts, sr)
 		if err != nil {
@@ -516,8 +514,14 @@ func (o *Operator) reScaleUpStatefulSet(replicaDiff int, ctx context.Context, st
 				sts.Name))
 	}
 
+	o.logger.Info("Disabling auto-rebalance")
+	err := o.esClient.updateAutoRebalance("none")
+	if err != nil {
+		return err
+	}
+
 	// TODO: only update if something changed
-	_, err := o.kube.AppsV1().StatefulSets(sts.Namespace).Update(ctx, sts, metav1.UpdateOptions{})
+	_, err = o.kube.AppsV1().StatefulSets(sts.Namespace).Update(ctx, sts, metav1.UpdateOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to update StatefulSet %s/%s: %v", sts.Namespace, sts.Name, err)
 	}
@@ -529,7 +533,7 @@ func (o *Operator) reScaleUpStatefulSet(replicaDiff int, ctx context.Context, st
 
 	log.Infof("Updated StatefulSet %s/%s and marked it as 'not updating'", sts.Namespace, sts.Name)
 
-	return sr.OnStableReplicasHook(ctx)
+	return nil
 }
 
 func (o *Operator) reScaleDownStatefulSet(replicaDiff int, ctx context.Context, sts *appsv1.StatefulSet, sr StatefulResource) error {
@@ -574,7 +578,6 @@ func (o *Operator) reScaleDownStatefulSet(replicaDiff int, ctx context.Context, 
 			if pod.Status.Phase == v1.PodPending {
 				continue
 			}
-
 			newPods = append(newPods, pod)
 		}
 
@@ -676,7 +679,6 @@ func (o *Operator) rescaleStatefulSet(ctx context.Context, sts *appsv1.StatefulS
 			if pod.Status.Phase == v1.PodPending {
 				continue
 			}
-
 			newPods = append(newPods, pod)
 		}
 
