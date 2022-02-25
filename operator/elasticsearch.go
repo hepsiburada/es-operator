@@ -326,6 +326,7 @@ func (o *ElasticsearchOperator) scaleEDS(ctx context.Context, eds *zv1.Elasticse
 
 	// exit early if the scaling operation is already defined
 	if scalingOperation != nil && scalingOperation.ScalingDirection != NONE {
+		o.logger.Info(fmt.Sprintf("%s scaling operation continues", scalingOperation.ScalingDirection))
 		return nil
 	}
 

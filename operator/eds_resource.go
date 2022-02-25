@@ -69,6 +69,8 @@ type StatefulResource interface {
 	Drain(ctx context.Context, pod *v1.Pod) error
 
 	DrainPods(ctx context.Context, pods []v1.Pod) error
+
+	UpdateIndexSettings() error
 }
 
 type EDSResource struct {
@@ -340,6 +342,20 @@ func (r *EDSResource) DrainPods(ctx context.Context, pods []v1.Pod) error {
 // StatefulSet.
 func (r *EDSResource) PreScaleDownHook(ctx context.Context) error {
 	return r.applyScalingOperation(ctx)
+}
+
+func (r *EDSResource) UpdateIndexSettings() error {
+	operation, err := edsScalingOperation(r.eds)
+	if err != nil {
+		return err
+	}
+	if operation != nil && operation.ScalingDirection != NONE {
+		err = r.esClient.UpdateIndexSettings(operation.IndexReplicas)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // OnStableReplicasHook ensures that the indexReplicas is set as defined in the

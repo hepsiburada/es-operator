@@ -544,7 +544,7 @@ func (o *Operator) reScaleDownStatefulSet(replicaDiff int, ctx context.Context, 
 
 	replicas := currentReplicas
 
-	err := sr.PreScaleDownHook(ctx)
+	err := sr.UpdateIndexSettings()
 
 	if err != nil {
 		return err
