@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"golang.org/x/sync/errgroup"
 	"net"
 	"net/http"
 	"net/url"
@@ -10,7 +11,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/gofiber/fiber/v2"
+	fiberprometheus "github.com/hepsiburada/fiber-prometheus/v2"
 	log "github.com/sirupsen/logrus"
 	"github.com/zalando-incubator/es-operator/operator"
 	"github.com/zalando-incubator/es-operator/pkg/clientset"
@@ -23,7 +25,7 @@ import (
 const (
 	defaultInterval           = "10s"
 	defaultAutoscalerInterval = "30s"
-	defaultMetricsAddress     = ":7979"
+	defaultApiServeAddress    = ":7979"
 	defaultClientGoTimeout    = 30 * time.Second
 	defaultClusterDNSZone     = "cluster.local."
 )
@@ -35,7 +37,7 @@ var (
 		APIServer             *url.URL
 		PodSelectors          Labels
 		PriorityNodeSelectors Labels
-		MetricsAddress        string
+		ApiServeAddress       string
 		ClientGoTimeout       time.Duration
 		Debug                 bool
 		OperatorID            string
@@ -59,8 +61,8 @@ func main() {
 		SetValue(&config.PodSelectors)
 	kingpin.Flag("priority-node-selector", "Specify a label selector for finding nodes with the highest priority. Common use case for this is to priorize nodes that are ready over nodes that are about to be terminated.").
 		SetValue(&config.PriorityNodeSelectors)
-	kingpin.Flag("metrics-address", "defines where to serve metrics").
-		Default(defaultMetricsAddress).StringVar(&config.MetricsAddress)
+	kingpin.Flag("api-serve-address", "defines where to serve metrics").
+		Default(defaultApiServeAddress).StringVar(&config.ApiServeAddress)
 	kingpin.Flag("client-go-timeout", "Set the timeout used for the Kubernetes client").
 		Default(defaultClientGoTimeout.String()).DurationVar(&config.ClientGoTimeout)
 	kingpin.Flag("operator-id", "ID of the operator used to determine ownership of EDS resources").
@@ -101,7 +103,7 @@ func main() {
 	)
 
 	go handleSigterm(cancel)
-	go serveMetrics(config.MetricsAddress)
+	go serveHandlers(config.ApiServeAddress)
 	operator.Run(ctx)
 }
 
@@ -178,8 +180,20 @@ func configureKubeConfig(apiServerURL *url.URL, timeout time.Duration, stopCh <-
 	return config, nil
 }
 
-// gather go metrics
-func serveMetrics(address string) {
-	http.Handle("/metrics", promhttp.Handler())
-	log.Fatal(http.ListenAndServe(address, nil))
+func serveHandlers(address string) {
+	app := fiber.New()
+
+	p8sMiddleware := fiberprometheus.NewMiddleware("fiber", "http", "/metrics")
+	p8sMiddleware.Register(app)
+
+	operator.SetupRoutes(app)
+
+	g := new(errgroup.Group)
+
+	g.Go(func() error { return app.Listen(address)})
+
+	err := g.Wait()
+	if err != nil {
+		log.Fatal(err)
+	}
 }

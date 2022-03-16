@@ -152,6 +152,11 @@ func (o *ElasticsearchOperator) runAutoscaler(ctx context.Context) {
 			}
 
 			for _, es := range resources {
+				if scalingManager.ScalingDisabled {
+					o.logger.Info(fmt.Sprintf("Scaling disabled !!!"))
+					continue
+				}
+
 				if es.ElasticsearchDataSet.Spec.Scaling != nil && es.ElasticsearchDataSet.Spec.Scaling.Enabled {
 					endpoint := o.getElasticsearchEndpoint(es.ElasticsearchDataSet)
 

@@ -39,6 +39,12 @@ type ESIndex struct {
 	Replicas  int32  `json:"rep"`
 }
 
+// ESAlias represent an alias to be used in public APIs
+type ESAlias struct {
+	Alias string `json:"alias"`
+	Index string `json:"index"`
+}
+
 // ESShard represent a single shard from the response of _cat/shards
 type ESShard struct {
 	IP    string `json:"ip"`
@@ -623,6 +629,63 @@ func (c *ESClient) GetIndices() ([]ESIndex, error) {
 			Primaries: int32(primaries),
 			Replicas:  int32(replicas),
 			Index:     index.Index,
+		})
+	}
+
+	return returnStruct, nil
+}
+
+func (c *ESClient) GetIndicesWithAlias() ([]ESIndex, error) {
+	aliases, err := c.GetAliases()
+
+	if err != nil {
+		return nil, err
+	}
+
+	esIndices, err := c.GetIndices()
+
+	if err != nil {
+		return nil, err
+	}
+
+	newEsIndices := make([]ESIndex, 0, len(aliases))
+	for _, alias := range aliases {
+		for _, index := range esIndices {
+			if alias.Index == index.Index {
+				newEsIndices = append(newEsIndices, index)
+				break
+			}
+		}
+	}
+	return newEsIndices, nil
+}
+
+func (c *ESClient) GetAliases() ([]ESAlias, error) {
+	resp, err := resty.New().R().
+		Get(c.Endpoint.String() + "/_cat/aliases?h=alias,index&format=json")
+
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode() != http.StatusOK {
+		return nil, fmt.Errorf("code status %d - %s", resp.StatusCode(), resp.Body())
+	}
+	var esAliases []ESAlias
+	err = json.Unmarshal(resp.Body(), &esAliases)
+	if err != nil {
+		return nil, err
+	}
+
+	returnStruct := make([]ESAlias, 0, len(esAliases))
+	for _, index := range esAliases {
+		// ignore system indices
+		if c.excludeSystemIndices && strings.HasPrefix(index.Index, ".") {
+			continue
+		}
+		returnStruct = append(returnStruct, ESAlias{
+			Alias: index.Alias,
+			Index: index.Index,
 		})
 	}
 

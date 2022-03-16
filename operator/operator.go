@@ -53,6 +53,11 @@ func (o *Operator) Run(ctx context.Context, done chan<- struct{}, sr StatefulRes
 		case <-time.After(time.Until(nextCheck)):
 			nextCheck = time.Now().Add(o.interval)
 
+			if scalingManager.ScalingDisabled {
+				o.logger.Info(fmt.Sprintf("Scaling disabled !!!"))
+				continue
+			}
+
 			err := o.operate(ctx, sr)
 			if err != nil {
 				log.Errorf("Failed to operate resource: %v", err)
@@ -353,6 +358,12 @@ func (o *Operator) operatePodsNew(ctx context.Context, sts *appsv1.StatefulSet, 
 	replicas := int32(0)
 	if sts.Spec.Replicas != nil {
 		replicas = *sts.Spec.Replicas
+	}
+
+	if replicas != desiredReplicas {
+		scalingManager.ActiveScalingContinues = true
+	} else {
+		scalingManager.ActiveScalingContinues = false
 	}
 
 	// prefer scale up over draining nodes.
