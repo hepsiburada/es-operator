@@ -5,8 +5,8 @@ require (
 	github.com/gofiber/fiber/v2 v2.29.0
 	github.com/hepsiburada/fiber-prometheus/v2 v2.0.1
 	github.com/imdario/mergo v0.3.7 // indirect
-	github.com/jarcoal/httpmock v1.1.0
-	github.com/prometheus/client_golang v1.11.0
+	github.com/jarcoal/httpmock v1.2.0
+	github.com/prometheus/client_golang v1.11.0 // indirect
 	github.com/sirupsen/logrus v1.8.1
 	github.com/stretchr/testify v1.7.0
 	golang.org/x/sync v0.0.0-20210220032951-036812b2e83c
