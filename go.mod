@@ -6,16 +6,15 @@ require (
 	github.com/hepsiburada/fiber-prometheus/v2 v2.0.1
 	github.com/imdario/mergo v0.3.7 // indirect
 	github.com/jarcoal/httpmock v1.1.0
-	github.com/prometheus/client_golang v1.11.0
+	github.com/prometheus/client_golang v1.11.0 // indirect
 	github.com/sirupsen/logrus v1.8.1
 	github.com/stretchr/testify v1.7.0
 	golang.org/x/sync v0.0.0-20210220032951-036812b2e83c
-	golang.org/x/tools v0.1.1 // indirect
 	gopkg.in/alecthomas/kingpin.v2 v2.2.6
 	gopkg.in/resty.v1 v1.12.0
 	k8s.io/api v0.21.5
 	k8s.io/apiextensions-apiserver v0.21.5 // indirect
-	k8s.io/apimachinery v0.21.5
+	k8s.io/apimachinery v0.24.2
 	k8s.io/client-go v0.21.5
 	k8s.io/code-generator v0.21.5
 	k8s.io/metrics v0.21.5
